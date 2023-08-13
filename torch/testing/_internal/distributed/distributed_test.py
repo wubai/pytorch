@@ -110,6 +110,15 @@ INIT_METHOD = os.getenv("INIT_METHOD", "env://")
 DEFAULT_TIMEOUT = 300
 CUSTOMIZED_TIMEOUT = {"test_DistributedDataParallel": 500}
 
+def get_profiling_event(postfix, profiler):
+    event_list = (
+        profiler.events()
+        if isinstance(profiler, torch.profiler.profile)
+        else profiler.function_events
+    )
+    return [
+        event for event in event_list if event.name.endswith(postfix)
+    ]
 
 class _FC2(nn.Module):
     def __init__(self):
@@ -3698,8 +3707,8 @@ class DistributedTest:
                     net.zero_grad()
                     torch.cuda.synchronize(device=self.rank)
 
-        @require_backend({"gloo", "nccl"})
-        @require_backends_available({"gloo", "nccl"})
+        @require_backend({"nccl"})
+        @require_backends_available({"nccl"})
         @skip_if_lt_x_gpu(2)
         def test_ddp_profiling(self):
             batch = 3
