@@ -1050,11 +1050,6 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::collective(
 
   post(ncclStreams_[key]);
 
-  g_recordFunctionEndCallback_ = work->recordFunctionEndCallback_;
-  sem_init(&sem_prof, 0, 0);
-  cudaStreamAddCallback(ncclStreams_[key][0], stream_callback, nullptr, 0);
-  std::async(std::launch::async, async_write_the_data, &g_recordFunctionEndCallback_);
-
   // Event should only be recorded after the ncclGroupEnd()
   for (size_t i = 0; i < inputs.size(); ++i) {
     at::cuda::CUDAStream& ncclStream = ncclStreams_[key][i];
@@ -1074,16 +1069,21 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::collective(
   work->opTimeout_ = opTimeout_;
   work->store_ = store_;
 
-//  if (work->recordFunctionEndCallback_) {
-//    // recordFunctionEndCallback_ is normally called in fininsh() function by
-//    // base class, but since finish is not called by WorkNCCL, we schedule this
-//    // function to be run when work is done. Note that addCallback() onto the
-//    // Work's CUDAFuture is not useful here, as it would just run the callback
-//    // inline.
-//    // Note when can_profile is false, profilingTitle is not provided and so,
-//    // recordFunctionEndCallback_ is not set.
+  if (work->recordFunctionEndCallback_) {
+    // recordFunctionEndCallback_ is normally called in fininsh() function by
+    // base class, but since finish is not called by WorkNCCL, we schedule this
+    // function to be run when work is done. Note that addCallback() onto the
+    // Work's CUDAFuture is not useful here, as it would just run the callback
+    // inline.
+    // Note when can_profile is false, profilingTitle is not provided and so,
+    // recordFunctionEndCallback_ is not set.
 //    work->recordFunctionEndCallback_();
-//  }
+
+    g_recordFunctionEndCallback_ = work->recordFunctionEndCallback_;
+    sem_init(&sem_prof, 0, 0);
+    cudaStreamAddCallback(ncclStreams_[key][0], stream_callback, nullptr, 0);
+    std::async(std::launch::async, async_write_the_data, &g_recordFunctionEndCallback_);
+  }
 
   if (asyncErrorHandling_) {
     workEnqueue(work);
