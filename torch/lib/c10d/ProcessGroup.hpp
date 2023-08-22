@@ -157,6 +157,9 @@ class ProcessGroup : public torch::CustomClassHolder {
     // When profiling, the callback to record end of operation event. This
     // callback needs to be called when collective operation is complete.
     std::function<void()> recordFunctionEndCallback_;
+
+    std::function<void()> recordFunctionEndCallback_before;
+
   };
 
   explicit ProcessGroup(int rank, int size);

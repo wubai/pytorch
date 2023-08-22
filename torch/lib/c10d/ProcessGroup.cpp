@@ -59,7 +59,12 @@ ProcessGroup::Work::Work(int rank, OpType opType, const char* profilingTitle)
   if (profilingTitle != nullptr) {
     auto recordingFunction = std::make_shared<at::RecordFunction>(at::RecordScope::USER_SCOPE);
     if (recordingFunction->isActive()) {
-        recordingFunction->before(profilingTitle, {});
+
+        std::function<void()> end_handler_before = [this, recordingFunction, profilingTitle]() {
+          recordingFunction->before(profilingTitle, {});
+        };
+        recordFunctionEndCallback_before = at::wrapPropagateTLSState(end_handler_before);
+
         std::function<void()> end_handler = [this, recordingFunction]() {
           recordingFunction->end();
         };

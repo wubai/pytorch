@@ -952,13 +952,15 @@ std::vector<at::Tensor> flatten_for_scatter_gather(
 } // namespace
 sem_t   sem_prof;
 std::function<void()> g_recordFunctionEndCallback_;
-
+std::function<void()> g_recordFunctionEndCallback_before;
+std::vector<std::future<void>> pending_futures;
 void CUDART_CB stream_callback(cudaStream_t stream, cudaError_t status, void *data) {
   sem_post(&sem_prof);
 }
 
-void async_write_the_data(std::function<void()> *fn)
+void async_write_the_data(std::function<void()> *fn, std::function<void()> *fn_before)
 {
+  (*fn_before)();
   sem_wait(&sem_prof);
   (*fn)();
 }
@@ -1014,6 +1016,23 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::collective(
   // Work itself will create the CUDA events on all GPUs of tensors
   bool can_profile = outputs.size() == 1;
   auto work = initWork(devices, rank_, opType, can_profile ? profilingTitle : nullptr);
+
+  if (work->recordFunctionEndCallback_) {
+    // recordFunctionEndCallback_ is normally called in fininsh() function by
+    // base class, but since finish is not called by WorkNCCL, we schedule this
+    // function to be run when work is done. Note that addCallback() onto the
+    // Work's CUDAFuture is not useful here, as it would just run the callback
+    // inline.
+    // Note when can_profile is false, profilingTitle is not provided and so,
+    // recordFunctionEndCallback_ is not set.
+    //    work->recordFunctionEndCallback_();
+    g_recordFunctionEndCallback_before = work->recordFunctionEndCallback_before;
+    g_recordFunctionEndCallback_ = work->recordFunctionEndCallback_;
+    sem_init(&sem_prof, 0, 0);
+
+    auto  tmp_val = std::async(std::launch::async, async_write_the_data, &g_recordFunctionEndCallback_, &g_recordFunctionEndCallback_before);
+    pending_futures.push_back(std::move(tmp_val));
+  }
 
   // Store references to outputs to be used by WorkNCCL::result and operator<<.
   work->outputs_ = std::make_shared<std::vector<at::Tensor>>(outputs);
@@ -1079,10 +1098,8 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::collective(
     // recordFunctionEndCallback_ is not set.
 //    work->recordFunctionEndCallback_();
 
-    g_recordFunctionEndCallback_ = work->recordFunctionEndCallback_;
-    sem_init(&sem_prof, 0, 0);
     cudaStreamAddCallback(ncclStreams_[key][0], stream_callback, nullptr, 0);
-    std::async(std::launch::async, async_write_the_data, &g_recordFunctionEndCallback_);
+    pending_futures[0].get();
   }
 
   if (asyncErrorHandling_) {
