@@ -1012,7 +1012,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::collective(
   auto work = initWork(devices, rank_, opType, can_profile ? profilingTitle : nullptr);
 
   if (work->recordFunctionEndCallback_) {
-
+    sem_init(&work->sem_prof, 0, 0);
     work->pending_future = std::async(std::launch::async, async_write_the_data, work);
   }
 
