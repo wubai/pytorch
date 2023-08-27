@@ -13,9 +13,6 @@
 
 #include <c10d/Utils.hpp>
 
-#include <future>
-#include <semaphore.h>
-
 namespace c10d {
 
 constexpr const char* const kNCCLAbortedCommStoreKey = "NCCLABORTEDCOMM";
@@ -950,19 +947,16 @@ std::vector<at::Tensor> flatten_for_scatter_gather(
 }
 
 } // namespace
-sem_t   sem_prof;
-std::function<void()> g_recordFunctionEndCallback_;
-std::function<void()> g_recordFunctionEndCallback_before;
-std::vector<std::future<void>> pending_futures;
-void CUDART_CB stream_callback(cudaStream_t stream, cudaError_t status, void *data) {
-  sem_post(&sem_prof);
+
+void CUDART_CB stream_callback(cudaStream_t stream, cudaError_t status, void *sem) {
+  sem_post((sem_t *)sem);
 }
 
-void async_write_the_data(std::function<void()> *fn, std::function<void()> *fn_before)
+void async_write_the_data(c10::intrusive_ptr<ProcessGroupNCCL::WorkNCCL> work)
 {
-  (*fn_before)();
-  sem_wait(&sem_prof);
-  (*fn)();
+  work->recordFunctionEndCallback_before();
+  sem_wait(&work->sem_prof);
+  work->recordFunctionEndCallback_();
 }
 
 c10::intrusive_ptr<ProcessGroupNCCL::WorkNCCL> ProcessGroupNCCL::initWork(
@@ -1018,20 +1012,8 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::collective(
   auto work = initWork(devices, rank_, opType, can_profile ? profilingTitle : nullptr);
 
   if (work->recordFunctionEndCallback_) {
-    // recordFunctionEndCallback_ is normally called in fininsh() function by
-    // base class, but since finish is not called by WorkNCCL, we schedule this
-    // function to be run when work is done. Note that addCallback() onto the
-    // Work's CUDAFuture is not useful here, as it would just run the callback
-    // inline.
-    // Note when can_profile is false, profilingTitle is not provided and so,
-    // recordFunctionEndCallback_ is not set.
-    //    work->recordFunctionEndCallback_();
-    g_recordFunctionEndCallback_before = work->recordFunctionEndCallback_before;
-    g_recordFunctionEndCallback_ = work->recordFunctionEndCallback_;
-    sem_init(&sem_prof, 0, 0);
 
-    auto  tmp_val = std::async(std::launch::async, async_write_the_data, &g_recordFunctionEndCallback_, &g_recordFunctionEndCallback_before);
-    pending_futures.push_back(std::move(tmp_val));
+    work->pending_future = std::async(std::launch::async, async_write_the_data, work);
   }
 
   // Store references to outputs to be used by WorkNCCL::result and operator<<.
@@ -1069,6 +1051,10 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::collective(
 
   post(ncclStreams_[key]);
 
+  if (work->recordFunctionEndCallback_) {
+    cudaStreamAddCallback(ncclStreams_[key][0], stream_callback, (void*)(&work->sem_prof), 0);
+  }
+
   // Event should only be recorded after the ncclGroupEnd()
   for (size_t i = 0; i < inputs.size(); ++i) {
     at::cuda::CUDAStream& ncclStream = ncclStreams_[key][i];
@@ -1087,20 +1073,6 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::collective(
   work->blockingWait_ = blockingWait_;
   work->opTimeout_ = opTimeout_;
   work->store_ = store_;
-
-  if (work->recordFunctionEndCallback_) {
-    // recordFunctionEndCallback_ is normally called in fininsh() function by
-    // base class, but since finish is not called by WorkNCCL, we schedule this
-    // function to be run when work is done. Note that addCallback() onto the
-    // Work's CUDAFuture is not useful here, as it would just run the callback
-    // inline.
-    // Note when can_profile is false, profilingTitle is not provided and so,
-    // recordFunctionEndCallback_ is not set.
-//    work->recordFunctionEndCallback_();
-
-    cudaStreamAddCallback(ncclStreams_[key][0], stream_callback, nullptr, 0);
-    pending_futures[0].get();
-  }
 
   if (asyncErrorHandling_) {
     workEnqueue(work);

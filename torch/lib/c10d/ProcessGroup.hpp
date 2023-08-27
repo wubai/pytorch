@@ -11,6 +11,9 @@
 
 #include <c10d/Types.hpp>
 
+#include <future>
+#include <semaphore.h>
+
 // *************************************************************************
 // PROCESS GROUP collective communication API IS BEING CHANGED BETWEEN
 // versions 1.7 and 1.8.
@@ -134,6 +137,13 @@ class ProcessGroup : public torch::CustomClassHolder {
 
     OpType retrieveOpType();
 
+    // When profiling, the callback to record end of operation event. This
+    // callback needs to be called when collective operation is complete.
+    std::function<void()> recordFunctionEndCallback_;
+    std::function<void()> recordFunctionEndCallback_before;
+    std::future<void> pending_future;
+    sem_t   sem_prof;
+
    protected:
     // Completes the work object and optionally sets the exception in a
     // thread-safe manner. Notifies all waiting condition variables as well.
@@ -153,12 +163,6 @@ class ProcessGroup : public torch::CustomClassHolder {
 
     // Operation type that this work object refers to.
     OpType opType_;
-
-    // When profiling, the callback to record end of operation event. This
-    // callback needs to be called when collective operation is complete.
-    std::function<void()> recordFunctionEndCallback_;
-
-    std::function<void()> recordFunctionEndCallback_before;
 
   };
 
